@@ -1,6 +1,7 @@
 """Seismic batch.""" # pylint: disable=too-many-lines
 import os
 from itertools import product
+from copy import deepcopy
 
 import warnings
 from textwrap import dedent
@@ -163,10 +164,16 @@ class SeismicBatch(Batch):
         if preloaded is None:
             self.meta = dict()
 
-    def _init_component(self, *args, dst, **kwargs):
-        """Create and preallocate a new attribute with the name ``dst`` if it
-        does not exist and return batch indices."""
-        _ = args, kwargs
+    def get_pos(self, data, component, index):
+        """"WILL BE DELETED"""
+        _ = component
+        if data is None:
+            pos = self.index.get_pos(index)
+        else:
+            pos = index
+        return pos
+
+    def __create_components(self, dst):
         dst = (dst, ) if isinstance(dst, str) else dst
 
         for comp in dst:
@@ -175,7 +182,43 @@ class SeismicBatch(Batch):
             if self.components is None or comp not in self.components:
                 self.add_components(comp, init=self.array_of_nones)
 
+    def __check_errors(self, output):
+        if any_action_failed(output):
+            all_errors = [error for error in output if isinstance(error, Exception)]
+            print(all_errors)
+            raise ValueError(all_errors)
+
+    def _init_items(self, *args, src, dst, **kwargs):
+        _ = args, kwargs
+        items = getattr(self, src)
+        self.__create_components(dst)
+        print('init ', items.shape)
+
+        return deepcopy(items)
+
+    def _init_component(self, *args, dst, **kwargs):
+        """Create and preallocate a new attribute with the name ``dst`` if it
+        does not exist and return batch indices."""
+        _ = args, kwargs
+        self.__create_components(dst)
+
         return self.indices
+
+    def _post_items(self, items, dst, *args, **kwargs):
+        _ = args, kwargs
+
+        self.__check_errors(items)
+        items = np.array(items + [None])[:-1]
+
+        setattr(self, dst, items)
+        return self
+
+    @action
+    @inbatch_parallel(init='_init_items', post='_post_items', target='threads')
+    def do_parallel(self, data, src, dst):
+        data += 1
+        print(data.shape)
+        return data
 
     def _post_filter_by_mask(self, mask, *args, **kwargs):
         """Index filtration using all received masks. This post function assumes that
@@ -199,10 +242,7 @@ class SeismicBatch(Batch):
         in new index.
         """
         _ = args, kwargs
-        if any_action_failed(mask):
-            all_errors = [error for error in mask if isinstance(error, Exception)]
-            print(all_errors)
-            raise ValueError(all_errors)
+        self.__check_errors(mask)
 
         mask = np.concatenate(mask)
         new_idf = self.index.get_df(index=mask, reset=False)
@@ -656,7 +696,7 @@ class SeismicBatch(Batch):
     def _load_from_segy_file(self, index, *args, src, dst, tslice=None):
         """Load from a single segy file."""
         _ = src, args
-        pos = self.get_pos(None, "indices", index)
+        pos = self.index.get_pos(index)
         path = index
         trace_seq = self.index.get_df([index])[(INDEX_UID, src)]
         if tslice is None:
@@ -1124,7 +1164,7 @@ class SeismicBatch(Batch):
         -------
         Multi-column subplots.
         """
-        pos = self.get_pos(None, 'indices', index)
+        pos = self.index.get_pos(index)
         if len(np.atleast_1d(src)) == 1:
             src = (src,)
 
@@ -1188,7 +1228,7 @@ class SeismicBatch(Batch):
         if 'crop_coords' not in self.meta[src]:
             raise ValueError("{} component doesn't contain crops!".format(src))
 
-        pos = self.get_pos(None, 'indices', index)
+        pos = self.index.get_pos(index)
 
         if src_picking is not None:
             raise NotImplementedError()
@@ -1240,7 +1280,7 @@ class SeismicBatch(Batch):
         -------
         Plot of seismogram(s) and power spectrum(s).
         """
-        pos = self.get_pos(None, 'indices', index)
+        pos = self.index.get_pos(index)
         if len(np.atleast_1d(src)) == 1:
             src = (src,)
 
@@ -1274,7 +1314,7 @@ class SeismicBatch(Batch):
         Gain's plot.
         """
         _ = kwargs
-        pos = self.get_pos(None, 'indices', index)
+        pos = self.index.get_pos(index)
         src = (src, ) if isinstance(src, str) else src
         sample = [getattr(self, source)[pos] for source in src]
         gain_plot(sample, window, xlim, ylim, figsize, names, **kwargs)
@@ -1302,7 +1342,7 @@ class SeismicBatch(Batch):
         -------
         Plot of seismogram(s) and power spectrum(s).
         """
-        pos = self.get_pos(None, 'indices', index)
+        pos = self.index.get_pos(index)
         if len(np.atleast_1d(src)) == 1:
             src = (src,)
 
@@ -1563,7 +1603,7 @@ class SeismicBatch(Batch):
         if isinstance(self.index, SegyFilesIndex):
             raise NotImplementedError("Index can't be SegyFilesIndex")
 
-        pos = self.get_pos(None, None, index)
+        pos = self.index.get_pos(index)
         field = getattr(self, src)[pos]
 
         len_x, len_y = field.shape
